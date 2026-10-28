@@ -3,6 +3,7 @@ import { getMic } from './audio'
 import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
+import { getRecognitionLanguage, scribeLanguageCode, LANG_CHANGED_EVENT } from './language'
 
 /**
  * The voice loop.
@@ -450,7 +451,8 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
     if (mode === 'deaf') return
     const t0 = performance.now()
     try {
-      const res = await fetch(`${BRIDGE_HTTP_URL}/stt`, {
+      const lang = scribeLanguageCode(getRecognitionLanguage())
+      const res = await fetch(`${BRIDGE_HTTP_URL}/stt?lang=${encodeURIComponent(lang)}`, {
         method: 'POST',
         headers: { 'content-type': blob.type || 'audio/webm' },
         body: blob,
@@ -617,6 +619,13 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
   let lastWake = 0
   let lastAlive = Date.now()
   let silenceTimer: ReturnType<typeof setTimeout> | null = null
+  /** Highest `e.results` index already folded into `settled`, for the current
+   *  recogniser instance. Reset in rec.onstart, not in reset() — a single
+   *  session spans many turns, but some browser builds have been seen to
+   *  redeliver a `resultIndex` that includes a result already marked final
+   *  in an earlier event. Clamping the scan to start no earlier than this is
+   *  what stops that becoming a duplicated "buy milk buy milk". */
+  let finalizedThrough = 0
 
   /** Same assembly rules as the premium path — a pause is not a full stop. */
   const assemble = makeAssembler({
@@ -676,11 +685,31 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     assemble.feed(text, false)
   }
 
+  /** A short extra wait, used once, for an interim result straggling right at
+   *  the point the sentence would otherwise fire. Not the full 900ms again —
+   *  the room has already been quiet that long, this only waits for the
+   *  engine itself to catch up and confirm the words it already heard. */
+  const FINALIZE_GRACE_MS = 300
+
   const bumpSilence = () => {
     clearSilence()
     // Endpoint on a short quiet gap; the ElevenLabs path tunes this more
     // finely, but a fixed window is plenty for the fallback.
-    silenceTimer = setTimeout(emit, 900)
+    silenceTimer = setTimeout(() => {
+      // The engine hasn't confirmed the last word(s) as final yet — an
+      // interim result is its provisional guess, and sending that as though
+      // it were the settled transcript is exactly what this must avoid where
+      // it reasonably can. One short grace window lets a merely-slow
+      // confirmation land normally (the common case); if nothing new arrives
+      // in it, emit() falls through to sending what's held regardless,
+      // because dropping real words the user said is worse than occasionally
+      // trusting the engine's own best guess.
+      if (interim.trim()) {
+        silenceTimer = setTimeout(emit, FINALIZE_GRACE_MS)
+        return
+      }
+      emit()
+    }, 900)
   }
 
   const onResult = (e: any) => {
@@ -693,10 +722,17 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     }
     let fresh = ''
     interim = ''
-    for (let i = e.resultIndex; i < e.results.length; i++) {
+    // See finalizedThrough's declaration: never re-read a result index
+    // already folded into `settled`, even if the browser hands it back again.
+    const from = Math.max(e.resultIndex, finalizedThrough)
+    for (let i = from; i < e.results.length; i++) {
       const chunk = e.results[i][0].transcript as string
-      if (e.results[i].isFinal) fresh += chunk
-      else interim += chunk
+      if (e.results[i].isFinal) {
+        fresh += chunk
+        finalizedThrough = i + 1
+      } else {
+        interim += chunk
+      }
     }
     const heard = `${settled}${fresh} ${interim}`.replace(/\s+/g, ' ').trim()
     if (!heard) return
@@ -760,12 +796,19 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     rec = new Ctor()
     rec.continuous = true
     rec.interimResults = true
-    rec.lang = 'en-GB'
+    // Was hardcoded to 'en-GB', which biased the recogniser toward British
+    // pronunciation for everyone regardless of who was actually speaking —
+    // a real source of "it keeps hearing the wrong words". Now the user's
+    // own Settings choice (default English (India); see language.ts).
+    rec.lang = getRecognitionLanguage()
     rec.onstart = () => {
       running = true
       diag.running = true
       diag.sessions++
       touch()
+      // A new recogniser's result indices start over from 0, independent of
+      // the one it replaced.
+      finalizedThrough = 0
     }
     rec.onresult = onResult
     rec.onerror = (ev: any) => {
@@ -793,6 +836,36 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
 
   spin()
 
+  // `rec.lang` is only read when a recogniser is built, in spin() — a change
+  // in Settings otherwise sits unused until the current session happens to
+  // end on its own (a natural restart, or the health check below), which can
+  // be the better part of a minute. Rebuilding it here is what makes a
+  // language change take effect on the next thing said, not the next
+  // restart.
+  const onLangChanged = () => {
+    if (stopped) return
+    try {
+      rec?.abort()
+    } catch {
+      /* already gone */
+    }
+  }
+  window.addEventListener(LANG_CHANGED_EVENT, onLangChanged)
+
+  // Standing down mid-sentence — Escape, the idle timer, dropping back to the
+  // wake word — must throw away whatever was half-heard, the same way the
+  // ElevenLabs engine's own guardPoll does. Without this, a sentence left
+  // holding in the assembler (it waits up to MAX_HOLD_MS for a pause to
+  // settle) fires on its own timer regardless, and a command the user never
+  // meant to finish sending lands after they had already told JARVIS to stop.
+  const guardPoll = setInterval(() => {
+    const mode = h.mode()
+    if ((mode === 'wake' || mode === 'deaf') && (assemble.held() || settled || interim)) {
+      assemble.cancel()
+      reset()
+    }
+  }, 200)
+
   // The heartbeat. If nothing has been heard from the engine for a while it has
   // gone quiet on us — tear it down and build a fresh one.
   const health = setInterval(() => {
@@ -817,6 +890,8 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     stop: () => {
       stopped = true
       clearInterval(health)
+      clearInterval(guardPoll)
+      window.removeEventListener(LANG_CHANGED_EVENT, onLangChanged)
       clearSilence()
       assemble.cancel()
       diag.running = false

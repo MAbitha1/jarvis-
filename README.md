@@ -233,6 +233,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_FILE_ROOTS` | — | Roots the `/file` endpoint may serve from |
 | `JARVIS_VOICE_ID` | — | ElevenLabs voice id |
 | `ELEVENLABS_API_KEY` | — | Optional; enables the ElevenLabs voice + Scribe |
+| `SERPER_API_KEY` | — | Optional; enables the built-in `web_search` tool (free tier at serper.dev) |
 
 ### Frontend (`.env.local`)
 

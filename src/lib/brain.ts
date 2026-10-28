@@ -100,6 +100,13 @@ export function interrupt(): void {
   cancel()
 }
 
+/** Start a new conversation — see bridge.ts's `resetSession` for why dropping
+ *  the socket is what that actually takes. A no-op on the direct path, which
+ *  holds no server-side memory between turns to reset in the first place. */
+export function resetConversation(): void {
+  if (usingBridge) bridge.resetSession()
+}
+
 /**
  * Whether the brain is reachable right now.
  *

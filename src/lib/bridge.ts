@@ -495,6 +495,23 @@ export function interrupt(): void {
   cancel()
 }
 
+/**
+ * Start a genuinely new conversation.
+ *
+ * The agent's memory lives in the `query()` session the bridge opened for
+ * THIS socket — there's no "forget everything" message that reaches it, only
+ * a new connection. So this drops the socket; `ws.onclose` below already
+ * does everything a fresh start needs: it clears `socket`, fires
+ * `onConnection('lost')` so the HUD says so, and schedules a reconnect, which
+ * lands on a brand new `wss.on('connection', ...)` on the bridge — a new
+ * `query()`, a blank transcript as far as the model is concerned. Nothing
+ * server-side has to change for this to work.
+ */
+export function resetSession(): void {
+  if (pending) cancel()
+  socket?.close()
+}
+
 /** `mcp__higgsfield__generate_image` -> `higgsfield · generate image` */
 function prettyToolName(raw: string): string {
   if (!raw.startsWith('mcp__')) return raw

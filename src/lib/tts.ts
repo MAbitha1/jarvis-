@@ -163,6 +163,61 @@ const MAX_UNSPOKEN = 220
 // ---------------------------------------------------------------------------
 
 const VOICE_PREF_KEY = 'jarvis.voice'
+const RATE_PREF_KEY = 'jarvis.rate'
+const PREFER_BROWSER_KEY = 'jarvis.preferBrowserVoice'
+
+/**
+ * User-facing speech settings, read from localStorage once at module load so
+ * every speaker created afterwards picks them up with no plumbing through
+ * App.tsx. Both are plain multipliers/flags on top of the existing engine
+ * selection — nothing about the fallback chain itself changes.
+ */
+function readNumber(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key)
+    const n = raw === null ? NaN : Number(raw)
+    return Number.isFinite(n) ? n : fallback
+  } catch {
+    return fallback
+  }
+}
+function readFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
+}
+
+let rateMultiplier = readNumber(RATE_PREF_KEY, 1)
+let preferBrowserVoice = readFlag(PREFER_BROWSER_KEY)
+
+/** 0.6 (slower) .. 1.6 (faster), 1 = the stock pace. */
+export function getSpeechRate(): number {
+  return rateMultiplier
+}
+export function setSpeechRate(rate: number): void {
+  rateMultiplier = Math.min(1.6, Math.max(0.6, rate))
+  try {
+    localStorage.setItem(RATE_PREF_KEY, String(rateMultiplier))
+  } catch {
+    /* session-only if storage is unavailable */
+  }
+}
+
+/** When true, skip the ElevenLabs/Kokoro path even if one is available —
+ *  pace over timbre, the opposite trade USE_ELEVENLABS normally makes. */
+export function getPreferBrowserVoice(): boolean {
+  return preferBrowserVoice
+}
+export function setPreferBrowserVoice(on: boolean): void {
+  preferBrowserVoice = on
+  try {
+    localStorage.setItem(PREFER_BROWSER_KEY, on ? '1' : '0')
+  } catch {
+    /* session-only if storage is unavailable */
+  }
+}
 
 /**
  * Rank installed voices by how close they are to the character: a British
@@ -240,6 +295,12 @@ function pickVoice(): SpeechSynthesisVoice | null {
   return cachedVoice
 }
 
+/** The browser voice that's selected, regardless of which engine is actually
+ *  speaking right now — what the Settings picker should show and act on. */
+export function browserVoiceName(): string {
+  return pickVoice()?.name ?? 'default'
+}
+
 /** What the HUD should show. Reports the engine actually in use rather than
  *  always naming a speechSynthesis voice that a cloud or neural engine has
  *  quietly replaced. */
@@ -249,6 +310,15 @@ export function currentVoiceName(): string {
     return KOKORO_VOICE.replace(/^bm_/, '')
   }
   return pickVoice()?.name ?? 'default'
+}
+
+/** Pick a specific voice by name — the Settings panel's voice list uses this
+ *  rather than only being able to step forward one at a time. */
+export function selectVoice(name: string): void {
+  const hit = candidateVoices().find((v) => v.name === name)
+  if (!hit) return
+  localStorage.setItem(VOICE_PREF_KEY, hit.name)
+  cachedVoice = hit
 }
 
 /** Step to the next candidate — lets you audition voices on your own machine
@@ -378,6 +448,10 @@ export function createSpeaker(): Speaker {
     // premium path automatic with no flag to set. It falls back to the browser
     // voice on any failure, so a student without a key still hears him speak.
     // `nativeBroken` latches on once the system voice has proved unusable.
+    if (preferBrowserVoice && !nativeBroken) {
+      diag.engine = 'system'
+      return null
+    }
     if (USE_ELEVENLABS || caps().tts || nativeBroken) {
       // Recorded at the moment the tier is chosen rather than only when the
       // native voice latches over. Without this the panel reported 'system'
@@ -480,8 +554,9 @@ export function createSpeaker(): Speaker {
       u.lang = voice?.lang ?? 'en-GB'
       // Deliberate, and deliberately invariant — the character's pace does not
       // change with stakes, and that steadiness is most of the effect. This
-      // lands around 130 wpm, below the median for film dialogue.
-      u.rate = 0.92
+      // lands around 130 wpm, below the median for film dialogue. The user's
+      // own speech-rate setting (Settings panel) scales it from here.
+      u.rate = 0.92 * rateMultiplier
       // Mid-baritone, and *not* pushed lower for gravitas. The voice is
       // clarity-weighted rather than chest-weighted; dropping it further reads
       // as a film-trailer voiceover, which is the wrong character entirely.
@@ -769,7 +844,9 @@ async function fetchCloudAudio(text: string): Promise<string | null> {
             voice_settings: {
               stability: 0.4,
               similarity_boost: 0.75,
-              speed: 1.05,
+              // ElevenLabs clamps this itself; our own rate multiplier rides
+              // on top of its normal 1.05x so the setting affects every engine.
+              speed: Math.min(1.2, Math.max(0.7, 1.05 * rateMultiplier)),
             },
           }),
         },

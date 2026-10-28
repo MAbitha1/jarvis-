@@ -21,6 +21,29 @@ import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
+import { searchServer } from './search.mjs'
+import { taskServer, loadTasks, addTask, setTaskDone, editTaskText, deleteTask } from './tasks.mjs'
+import { fileServer, saveUpload } from './files.mjs'
+import { readSysInfo } from './sysinfo.mjs'
+import {
+  pcServer,
+  getVolume,
+  setVolume,
+  adjustVolume,
+  muteSystem,
+  unmuteSystem,
+  getBrightness,
+  setBrightness,
+  adjustBrightness,
+  checkWifiStatus,
+  checkInternet,
+  wifiSet,
+  openNotepad,
+  openCalculator,
+  takeScreenshot,
+  setDarkMode,
+  lockPc,
+} from './pccontrol.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -163,17 +186,19 @@ function configuredServers() {
     const cfg = JSON.parse(
       readFileSync(join(homedir(), '.claude.json'), 'utf8'),
     )
+    // Project keys in .claude.json are always forward-slashed, even on
+    // Windows, where homedir() returns backslashes — a direct lookup there
+    // never matched, so every project-scoped server was silently dropped.
+    const home = homedir().replace(/\\/g, '/')
     return {
       ...(cfg.mcpServers ?? {}),
       // Servers scoped to the home directory apply too, since that's our cwd.
-      ...(cfg.projects?.[homedir()]?.mcpServers ?? {}),
+      ...(cfg.projects?.[home]?.mcpServers ?? {}),
     }
   } catch {
     return {}
   }
 }
-
-const MCP_SERVERS = configuredServers()
 
 /** MCP tools arrive as `mcp__<server>__<tool>`. */
 const mcpServerOf = (toolName) =>
@@ -278,6 +303,29 @@ function decideTool(name) {
     // and the real gate is the browser's own camera permission plus an
     // indicator the user can see for as long as it is live.
     if (server === 'jarvis_eyes') return true
+
+    // A live web search is a read, same reasoning as the READ_ONLY_MCP
+    // allowlist below — named explicitly because it's this bridge's own
+    // in-process server rather than one of Claude Code's configured ones.
+    if (server === 'jarvis_search') return true
+
+    // The task list. Local file, nothing reaches the outside world — same
+    // reasoning as jarvis_ui above, not the EFFECTFUL_VERB veto every other
+    // server's "add"/"delete" tools would otherwise trip.
+    if (server === 'jarvis_tasks') return true
+
+    // Reading back a file the user just uploaded through the HUD. A read,
+    // like jarvis_search — the file arrived through /upload, this only
+    // extracts its text.
+    if (server === 'jarvis_files') return true
+
+    // Volume, brightness, dark mode, screenshot and the rest of this
+    // machine's controls. The dashboard's buttons already call the very same
+    // pccontrol.mjs functions with no write gate (see the /pc/ routes), so
+    // withholding them from voice only meant "set the volume to fifty" was
+    // refused out loud while the slider beside it worked. Everything here is
+    // local and undoable, and wifi_set off still demands its own confirm.
+    if (server === 'jarvis_pc') return true
 
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
@@ -426,6 +474,19 @@ Your eyes:
 - Describe a watch as a sequence — what changed between the frames — not as a
   list of pictures. They know what their own hands look like.
 
+This machine (volume, brightness, Wi-Fi, and a few one-shot actions):
+- Report the number the tool actually returned, never the one you asked for.
+  "Volume is now forty-two percent" only after set_volume's own reply says
+  forty-two — if it came back different, or failed, say that instead.
+- Before wifi_set turns Wi-Fi off, ask once in plain words — it can cut the
+  connection this conversation runs over — and only call it with confirm:
+  true once they say yes. Turning it on needs no asking.
+- If a tool reports it needs Administrator privileges, say so plainly and
+  name the manual alternative it gave you. Never suggest restarting anything
+  elevated yourself.
+- If brightness or Wi-Fi reports unsupported or absent, say that plainly
+  rather than estimating a number.
+
 Using tools:
 - You have real tools on this machine. Use them rather than guessing.
 - Never narrate that you're about to use one. No "Let me search for that" or
@@ -455,6 +516,27 @@ function elevenKey() {
   } catch {
     return null
   }
+}
+
+/**
+ * Whether the configured value is actually usable as an ElevenLabs secret
+ * key, not just present.
+ *
+ * `/health` used to report the premium engine as available the moment any
+ * string sat in ELEVENLABS_API_KEY, which is not the same thing. A key ID —
+ * what ElevenLabs' own dashboard shows you right next to the real secret key,
+ * easy to copy by mistake — is a non-empty string too, and every real secret
+ * key ElevenLabs issues starts with `sk_`. Reporting that as working sent the
+ * browser down the premium path for both speech in and speech out, and every
+ * single call then failed with 401/400 `invalid_api_key` — not a flaky
+ * recognizer, a wrong credential being trusted as a right one. The browser's
+ * own recognition and voice are free and need no key at all; the one failure
+ * mode worse than "no premium voice" is "silently broken premium voice",
+ * which is what a bare existence check produces.
+ */
+function elevenKeyUsable() {
+  const key = elevenKey()
+  return typeof key === 'string' && key.startsWith('sk_')
 }
 
 const VOICE_ID = process.env.JARVIS_VOICE_ID ?? 'JBFqnCBsd6RMkjVDRZzb'
@@ -655,8 +737,29 @@ function corsFor(req) {
   if (origin) {
     headers['access-control-allow-origin'] = origin
     headers['access-control-allow-headers'] = 'content-type'
+    // GET and POST are CORS-safelisted methods and never needed this; PATCH
+    // and DELETE (the /tasks endpoints) are not, so the preflight response
+    // has to name them explicitly or the browser blocks the real request.
+    headers['access-control-allow-methods'] = 'GET, POST, PATCH, DELETE, OPTIONS'
   }
   return headers
+}
+
+/** Small JSON bodies only — the /tasks endpoints, nothing that carries
+ *  media. Mirrors the size-guard shape the /stt audio reader uses below. */
+async function readJsonBody(req, maxBytes = 64 * 1024) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > maxBytes) {
+      req.destroy()
+      throw new Error('request body too large')
+    }
+    chunks.push(chunk)
+  }
+  if (!size) return {}
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
 // One HTTP server for both the speech proxy and the WebSocket upgrade.
@@ -679,12 +782,202 @@ const handleRequest = async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     // The browser reads this once at boot to decide which voice engine to use.
     // Both premium paths ride the same ElevenLabs key, so both flags track it:
-    // with a key the app transcribes with Scribe and speaks with ElevenLabs;
-    // without one it falls back to the browser's own recogniser and voice, so a
-    // student with nothing configured still has a working assistant.
-    const eleven = Boolean(elevenKey())
+    // with a *usable* key the app transcribes with Scribe and speaks with
+    // ElevenLabs; without one — including a present-but-wrong key, see
+    // elevenKeyUsable — it falls back to the browser's own recogniser and
+    // voice, so a student with nothing configured (or a pasted-wrong key)
+    // still has a working assistant instead of a silently broken one.
+    const eleven = elevenKeyUsable()
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
     return res.end(JSON.stringify({ ok: true, tts: eleven, stt: eleven }))
+  }
+
+  // Live machine metrics for the System Monitor dashboard — CPU, memory, disk,
+  // battery, network. Read-only (see sysinfo.mjs), polled by the page every
+  // few seconds, and reported per-metric so one unavailable reading (no
+  // battery, no default network interface) doesn't blank the rest.
+  if (req.method === 'GET' && req.url === '/sysinfo') {
+    try {
+      const info = await readSysInfo()
+      res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+      return res.end(JSON.stringify(info))
+    } catch (err) {
+      res.writeHead(502, { ...cors, 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ ok: false, error: String(err?.message ?? err) }))
+    }
+  }
+
+  // PC control — volume, brightness, Wi-Fi, and a few one-shot actions, for
+  // the dashboard's sliders and buttons. Every route below calls straight
+  // into pccontrol.mjs — the exact same functions the jarvis_pc voice tools
+  // use — so a button and the matching voice command can never drift apart,
+  // and "set volume to 50" from either one lands on the same real value.
+  //
+  // Unlike the AI's own tool calls, these are not gated behind
+  // JARVIS_ALLOW_WRITES: a button click is deliberate, visible action the
+  // user just took on their own screen, which is exactly the kind of
+  // explicit confirmation that gate exists to approximate for voice. Wi-Fi
+  // off still needs its own `confirm` flag in the body, same as the voice
+  // tool, so the UI's confirmation dialog is what actually gates it.
+  if (req.url?.startsWith('/pc/')) {
+    const send = (status, body) => {
+      res.writeHead(status, { ...cors, 'content-type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }
+    const body = async () => {
+      try {
+        return await readJsonBody(req)
+      } catch {
+        return {}
+      }
+    }
+
+    try {
+      switch (`${req.method} ${req.url}`) {
+        case 'GET /pc/volume':
+          return send(200, { ok: true, ...(await getVolume()) })
+        case 'POST /pc/volume':
+          return send(200, { ok: true, ...(await setVolume((await body())?.percent)) })
+        case 'POST /pc/volume/adjust':
+          return send(200, { ok: true, ...(await adjustVolume(Number((await body())?.delta) || 0)) })
+        case 'POST /pc/volume/mute':
+          return send(200, { ok: true, ...(await muteSystem()) })
+        case 'POST /pc/volume/unmute':
+          return send(200, { ok: true, ...(await unmuteSystem()) })
+        case 'GET /pc/brightness':
+          return send(200, { ok: true, ...(await getBrightness()) })
+        case 'POST /pc/brightness':
+          return send(200, { ok: true, ...(await setBrightness((await body())?.percent)) })
+        case 'POST /pc/brightness/adjust':
+          return send(200, { ok: true, ...(await adjustBrightness(Number((await body())?.delta) || 0)) })
+        case 'GET /pc/wifi': {
+          const [status, internet] = await Promise.all([checkWifiStatus(), checkInternet()])
+          return send(200, { ok: true, ...status, online: internet.online })
+        }
+        case 'POST /pc/wifi': {
+          const b = await body()
+          const result = await wifiSet(Boolean(b?.on), Boolean(b?.confirm))
+          return send(result.ok ? 200 : 409, result)
+        }
+        case 'POST /pc/notepad':
+          return send(200, openNotepad())
+        case 'POST /pc/calculator':
+          return send(200, openCalculator())
+        case 'POST /pc/screenshot':
+          return send(200, { ok: true, ...(await takeScreenshot()) })
+        case 'POST /pc/darkmode':
+          return send(200, { ok: true, ...(await setDarkMode(Boolean((await body())?.on))) })
+        case 'POST /pc/lock':
+          return send(200, lockPc())
+      }
+      return send(404, { ok: false, error: 'not found' })
+    } catch (err) {
+      return send(req.method === 'GET' ? 502 : 400, { ok: false, error: String(err?.message ?? err) })
+    }
+  }
+
+  // The task list, for the HUD's Tasks panel. Voice ("Jarvis, add a task...")
+  // and this panel are two doors onto the one file tasks.mjs owns — there is
+  // no separate frontend-only task store to drift out of sync with it.
+  if (req.url === '/tasks' || req.url?.startsWith('/tasks/')) {
+    const id = req.url.startsWith('/tasks/') ? decodeURIComponent(req.url.slice(7)) : null
+
+    if (req.method === 'GET' && !id) {
+      const tasks = await loadTasks()
+      res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+      return res.end(JSON.stringify(tasks))
+    }
+
+    if (req.method === 'POST' && !id) {
+      let body
+      try {
+        body = await readJsonBody(req)
+      } catch (err) {
+        res.writeHead(400, cors)
+        return res.end(String(err?.message ?? err))
+      }
+      const text = String(body?.text ?? '').trim()
+      if (!text) {
+        res.writeHead(400, cors)
+        return res.end('text is required')
+      }
+      const task = await addTask(text)
+      res.writeHead(201, { ...cors, 'content-type': 'application/json' })
+      return res.end(JSON.stringify(task))
+    }
+
+    if (req.method === 'PATCH' && id) {
+      let body
+      try {
+        body = await readJsonBody(req)
+      } catch (err) {
+        res.writeHead(400, cors)
+        return res.end(String(err?.message ?? err))
+      }
+      const task =
+        typeof body?.done === 'boolean'
+          ? await setTaskDone(id, body.done)
+          : typeof body?.text === 'string'
+            ? await editTaskText(id, body.text)
+            : null
+      if (!task) {
+        res.writeHead(404, cors)
+        return res.end('task not found')
+      }
+      res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+      return res.end(JSON.stringify(task))
+    }
+
+    if (req.method === 'DELETE' && id) {
+      const removed = await deleteTask(id)
+      res.writeHead(removed ? 204 : 404, cors)
+      return res.end()
+    }
+
+    res.writeHead(404, cors)
+    return res.end()
+  }
+
+  // File Assistant upload. The browser posts the raw bytes with the original
+  // name in a header — no multipart parser needed for exactly two extensions.
+  // Validation (type, size, non-empty) lives in files.mjs's saveUpload, which
+  // this only calls; see that module for why.
+  if (req.method === 'POST' && req.url === '/upload') {
+    const filename = (() => {
+      try {
+        return decodeURIComponent(req.headers['x-jarvis-filename'] ?? 'upload')
+      } catch {
+        return 'upload'
+      }
+    })()
+
+    const chunks = []
+    let size = 0
+    let overflowed = false
+    // A couple of MB of headroom over the 10 MB saveUpload enforces, so the
+    // exact-limit error comes from one place with one message.
+    for await (const chunk of req) {
+      chunks.push(chunk)
+      size += chunk.length
+      if (size > 12 * 1024 * 1024) {
+        overflowed = true
+        break
+      }
+    }
+    if (overflowed) {
+      req.destroy()
+      res.writeHead(413, cors)
+      return res.end('file too large')
+    }
+
+    try {
+      const result = await saveUpload(filename, Buffer.concat(chunks))
+      res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+      return res.end(JSON.stringify(result))
+    } catch (err) {
+      res.writeHead(400, cors)
+      return res.end(String(err?.message ?? err))
+    }
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
@@ -891,12 +1184,18 @@ const handleRequest = async (req, res) => {
   // use, and a server-side transcriber cannot. Detecting that the user is
   // speaking at all is done locally with voice-activity detection, which never
   // touches this endpoint; this is only for the words.
-  if (req.method === 'POST' && req.url === '/stt') {
+  if (req.method === 'POST' && (req.url === '/stt' || req.url?.startsWith('/stt?'))) {
     const key = elevenKey()
     if (!key) {
       res.writeHead(503, cors)
       return res.end('no elevenlabs key')
     }
+
+    // A hint for Scribe, from the user's Settings language choice (see
+    // language.ts) — bare ISO-639-1, e.g. "en", "hi". Optional: Scribe
+    // auto-detects well on its own, so an absent or unrecognised code is
+    // simply not sent rather than treated as an error.
+    const lang = new URL(req.url, 'http://x').searchParams.get('lang')?.trim()
 
     const type = req.headers['content-type'] || 'audio/webm'
     const chunks = []
@@ -937,6 +1236,9 @@ const handleRequest = async (req, res) => {
             : 'webm'
       const form = new FormData()
       form.append('model_id', 'scribe_v1')
+      // A bare ISO-639-1 code only — anything else is more likely a typo in
+      // the stored setting than a real language, so it's left to auto-detect.
+      if (lang && /^[a-z]{2,3}$/i.test(lang)) form.append('language_code', lang)
       form.append(
         'file',
         new Blob([Buffer.concat(chunks)], { type }),
@@ -1002,7 +1304,7 @@ server.listen(PORT)
 
 console.log(`[jarvis] bridge listening on ws://localhost:${PORT}`)
 console.log(
-  `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
+  `[jarvis] speech ${elevenKeyUsable() ? 'via ElevenLabs (key from MCP config)' : elevenKey() ? 'using browser fallback voice — ELEVENLABS_API_KEY is set but is not a usable secret key (expected one starting with "sk_")' : 'using browser fallback voice'}`,
 )
 console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(
@@ -1039,8 +1341,44 @@ const RESULT_FAILURES = {
   default: 'The turn ended without an answer.',
 }
 
+/**
+ * A failed API call does not arrive as an error subtype. The SDK reports it as
+ * subtype 'success' with is_error set, and the API's own notice in `result` —
+ * "You've hit your weekly limit · resets 10:30am (Asia/Calcutta)". Passed
+ * through as an answer, that notice was spoken back to every single question
+ * as if it were the reply, which looks exactly like JARVIS ignoring what it
+ * was asked. Turn it into a sentence that says what is actually wrong.
+ */
+function apiFailureMessage(msg) {
+  const notice = String(msg.result ?? '')
+  const status = msg.api_error_status
+  if (status === 429 || /limit/i.test(notice)) {
+    // Keep the reset time — it is the one useful thing in the notice. The
+    // middle dot and the timezone in brackets do not survive being spoken.
+    const reset = notice.match(/resets\s+([^(·]+)/i)?.[1]?.trim()
+    return (
+      "I'm afraid the Claude usage limit on this account has been reached, so I cannot answer anything just now." +
+      (reset ? ` It resets at ${reset}.` : '') +
+      ' Setting an Anthropic API key for the bridge would let me carry on in the meantime.'
+    )
+  }
+  if (status === 401 || status === 403) {
+    return "I'm afraid I'm not signed in to Claude. Run claude and log in, then restart me."
+  }
+  if (status === 529 || status >= 500) {
+    return 'Claude is overloaded at the moment. Ask me again in a minute.'
+  }
+  return notice ? `The request to Claude failed: ${notice}` : RESULT_FAILURES.default
+}
+
 wss.on('connection', (socket) => {
   console.log('[jarvis] client connected')
+
+  // Read fresh per connection rather than once at process start: this file
+  // is Claude Code's own live config, which it rewrites during normal use —
+  // a bridge left running across an `mcp add`/`mcp remove` used to keep
+  // announcing whatever was configured when it happened to boot.
+  const MCP_SERVERS = configuredServers()
 
   // Answer the HUD straight away rather than making it wait for the agent's
   // first turn. Refined later by the real init message.
@@ -1214,6 +1552,23 @@ wss.on('connection', (socket) => {
         jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }),
         // The camera, which unlike everything else here has to ask and wait.
         jarvis_eyes: visionServer(ask),
+        // A built-in search fallback for a machine with no exa/serper/serpapi
+        // MCP server configured — see search.mjs.
+        jarvis_search: searchServer(),
+        // The persistent task list — see tasks.mjs. Shares its JSON file with
+        // the /tasks HTTP endpoints below, so voice and the HUD panel agree.
+        jarvis_tasks: taskServer(),
+        // Reads back text from a file the /upload endpoint just saved — see
+        // files.mjs.
+        jarvis_files: fileServer(),
+        // Volume, brightness, Wi-Fi, system stats, and a few one-shot
+        // actions on this machine — see pccontrol.mjs. readSysInfo is
+        // passed in rather than imported by pccontrol.mjs itself, since
+        // sysinfo.mjs already imports getVolume/getBrightness the other
+        // way — this is what keeps that a one-directional dependency
+        // instead of a circular one. decideTool allows the whole server, the
+        // same as the dashboard's /pc/ buttons — see the note there.
+        jarvis_pc: pcServer({ readSysInfo }),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
@@ -1342,7 +1697,12 @@ wss.on('connection', (socket) => {
             // empty text is indistinguishable from a turn that simply had
             // nothing to say — the HUD stops spinning and JARVIS stands there
             // silent. Say what happened instead.
-            if (msg.subtype === 'success') {
+            if (msg.subtype === 'success' && msg.is_error) {
+              console.error(
+                `[jarvis] API error ${msg.api_error_status ?? ''}: ${msg.result ?? ''}`,
+              )
+              sendTurn({ type: 'error', message: apiFailureMessage(msg) })
+            } else if (msg.subtype === 'success') {
               sendTurn({
                 type: 'done',
                 text: msg.result ?? '',

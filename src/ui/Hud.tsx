@@ -6,6 +6,7 @@ import { BladeSweep, Blades } from './Blades'
 import { Effects } from './Effects'
 import { Pointer } from './Pointer'
 import { GestureGuide } from './GestureGuide'
+import { FileUpload } from './FileUpload'
 
 const statusText: Record<Phase, string> = {
   offline: 'OFFLINE',
@@ -144,9 +145,66 @@ function DecodeText({ text }: { text: string }) {
   )
 }
 
+/* -------------------------------------------------------------------- chat */
+
+/**
+ * The typed alternative to speaking. Hidden by default — opened with the
+ * footer button or the C key — so the reactor-first look is unchanged for
+ * anyone who never touches it.
+ */
+function ChatInput({ onSend }: { onSend: (text: string) => void }) {
+  const open = useStore((s) => s.chatOpen)
+  const setChatOpen = useStore((s) => s.setChatOpen)
+  const [value, setValue] = useState('')
+  const box = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (open) box.current?.focus()
+  }, [open])
+
+  if (!open) return null
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const text = value.trim()
+    if (!text) return
+    onSend(text)
+    setValue('')
+  }
+
+  return (
+    <motion.form
+      className="chat-input"
+      onSubmit={submit}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 10 }}
+    >
+      <input
+        ref={box}
+        className="chat-input-field"
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            setChatOpen(false)
+          }
+        }}
+        placeholder="Type to JARVIS…"
+        autoComplete="off"
+      />
+      <button type="submit" className="chat-input-send" disabled={!value.trim()}>
+        Send
+      </button>
+    </motion.form>
+  )
+}
+
 /* --------------------------------------------------------------------- hud */
 
-export function Hud() {
+export function Hud({ onSend }: { onSend: (text: string) => void }) {
   const phase = useStore((s) => s.phase)
   const caption = useStore((s) => s.caption)
   const turns = useStore((s) => s.turns)
@@ -159,6 +217,10 @@ export function Hud() {
   const gestures = useStore((s) => s.gestures)
   const looking = useStore((s) => s.looking)
   const ui = useStore((s) => s.ui)
+  const muted = useStore((s) => s.muted)
+  const setMuted = useStore((s) => s.setMuted)
+  const chatOpen = useStore((s) => s.chatOpen)
+  const setChatOpen = useStore((s) => s.setChatOpen)
 
   // accentFor folds JARVIS's overrides in over the phase colour, so one
   // variable on the root carries a theme change into every .hud-* rule without
@@ -211,7 +273,18 @@ export function Hud() {
       {ui.chrome.systems && (
         <aside className="rail rail-left">
           <div className="rail-title">SYSTEMS</div>
-          {connected.length === 0 && <div className="rail-item dim">none linked</div>}
+          {connected.length === 0 &&
+            // The bridge's own MCP servers only confirm themselves on its
+            // *second* report — the agent doesn't announce what it found
+            // until the first turn runs (see configuredServers in
+            // server.mjs) — so an empty list this early is "not checked
+            // yet", not "checked, found nothing". Only call it that once
+            // standing down makes "still discovering" stop being true.
+            (phase === 'offline' || phase === 'boot' ? (
+              <div className="rail-item dim">none linked</div>
+            ) : (
+              <div className="rail-item dim">discovering…</div>
+            ))}
           {connected.map((c) => (
             <div key={c} className="rail-item">
               <span className="tick" />
@@ -310,9 +383,33 @@ export function Hud() {
 
       {error && <div className="error">{error}</div>}
 
+      <AnimatePresence>
+        {phase !== 'offline' && phase !== 'boot' && <ChatInput onSend={onSend} />}
+      </AnimatePresence>
+
       <footer className="hud-bottom">
+        {phase !== 'offline' && phase !== 'boot' && (
+          <div className="hud-controls">
+            <button
+              className={`hud-icon-btn${chatOpen ? ' active' : ''}`}
+              onClick={() => setChatOpen(!chatOpen)}
+              title="Type instead of speaking (C)"
+            >
+              ⌨
+            </button>
+            <button
+              className={`hud-icon-btn hud-text-btn${muted ? ' active' : ''}`}
+              onClick={() => setMuted(!muted)}
+              title={muted ? 'Unmute (Q)' : 'Mute (Q)'}
+            >
+              {muted ? 'MUTED' : 'SOUND'}
+            </button>
+            <FileUpload onUploaded={onSend} />
+          </div>
+        )}
         <span className="hint">
-          say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>G</kbd> hands
+          say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>C</kbd> type ·{' '}
+          <kbd>Q</kbd> mute · <kbd>S</kbd> settings · <kbd>K</kbd> tasks · <kbd>G</kbd> hands
           {voice && (
             <>
               {' · '}

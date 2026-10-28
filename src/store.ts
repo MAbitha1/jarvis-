@@ -225,6 +225,12 @@ type State = {
   /** Whether the camera is on and hands are being tracked. Store-backed rather
    *  than read off the tracker, because the indicator has to re-render. */
   gestures: boolean
+  /** When true, respond() still runs and the transcript still fills in, but no
+   *  speaker is created — JARVIS answers silently. Persisted across reloads. */
+  muted: boolean
+  /** Whether the text chat input is open. Hidden by default so the voice-first
+   *  HUD stays uncluttered; a footer button or key reveals it. */
+  chatOpen: boolean
   /** Set while JARVIS is taking a look, to whatever he said he was looking for.
    *  null when he is not. The camera light is on either way — this says why. */
   looking: string | null
@@ -243,6 +249,8 @@ type State = {
 
   setVoice: (v: string) => void
   setGestures: (on: boolean) => void
+  setMuted: (m: boolean) => void
+  setChatOpen: (open: boolean) => void
   setLooking: (why: string | null) => void
   setBootNote: (n: string) => void
   pushPanel: (p: Panel) => void
@@ -260,6 +268,9 @@ type State = {
   setConnected: (c: string[]) => void
   pushTurn: (t: Turn) => void
   appendToLastTurn: (text: string) => void
+  /** Replace the whole transcript at once — restoring a saved conversation, or
+   *  the boot-time reload of the current one. */
+  loadTurns: (turns: Turn[]) => void
 
   applyUi: (patch: UiPatch) => void
   addOrbit: (o: OrbitObject) => void
@@ -280,6 +291,15 @@ export const useStore = create<State>((set) => ({
   connected: [],
   voice: '',
   gestures: false,
+  // Read once at module load — a reload should come back the way it was left.
+  muted: (() => {
+    try {
+      return localStorage.getItem('jarvis.muted') === '1'
+    } catch {
+      return false
+    }
+  })(),
+  chatOpen: false,
   looking: null,
   panels: [],
   blades: [],
@@ -290,6 +310,15 @@ export const useStore = create<State>((set) => ({
 
   setVoice: (voice) => set({ voice }),
   setGestures: (gestures) => set({ gestures }),
+  setMuted: (muted) => {
+    try {
+      localStorage.setItem('jarvis.muted', muted ? '1' : '0')
+    } catch {
+      /* private browsing, or storage disabled — mute still works for the session */
+    }
+    set({ muted })
+  },
+  setChatOpen: (chatOpen) => set({ chatOpen }),
   setLooking: (looking) => set({ looking }),
   setBootNote: (bootNote) => set({ bootNote }),
   // Three is as many as fits around the reactor without crowding it. Sticky
@@ -353,6 +382,7 @@ export const useStore = create<State>((set) => ({
   setError: (error) => set({ error }),
   setConnected: (connected) => set({ connected }),
   pushTurn: (turn) => set((s) => ({ turns: [...s.turns.slice(-40), turn] })),
+  loadTurns: (turns) => set({ turns: turns.slice(-40) }),
   appendToLastTurn: (text) =>
     set((s) => {
       const turns = [...s.turns]

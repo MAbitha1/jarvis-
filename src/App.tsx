@@ -4,6 +4,9 @@ import { Hud } from './ui/Hud'
 import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
+import { Settings } from './ui/Settings'
+import { Tasks } from './ui/Tasks'
+import { SystemMonitor } from './ui/SystemMonitor'
 import { useStore } from './store'
 import { startVoice, type Voice, type VoiceMode } from './lib/voice'
 import { createSpeaker, cycleVoice, currentVoiceName } from './lib/tts'
@@ -27,8 +30,11 @@ import {
   watchConnection,
   connectedLabels,
   usingBridge,
+  resetConversation,
   type Msg,
 } from './lib/brain'
+import * as chatHistory from './lib/history'
+import { isTypingTarget } from './lib/keys'
 import { startAnalyser, micLevel } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
 import { env } from './config'
@@ -61,6 +67,19 @@ const newId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `id${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 
+/**
+ * A speaker that does nothing. Used while muted — respond() and the wake
+ * greeting still run exactly as they do with sound on (the transcript fills
+ * in, tools still fire), only nothing is ever sent to an audio engine.
+ */
+const silentSpeaker = (): ReturnType<typeof createSpeaker> => ({
+  push: () => {},
+  say: () => {},
+  end: async () => {},
+  cancel: () => {},
+  level: () => 0,
+})
+
 /** The same mishearings voice.ts accepts for the wake word — otherwise a turn
  *  that woke him as "travis" gets that word sent on to the model as a question. */
 const NAME = '(?:jarvis|jarvys|jervis|travis|jarviss|java\'s|jarv)'
@@ -72,6 +91,7 @@ const LEADING_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}\\b[\\s,.:!?-
 export default function App() {
   const store = useStore
   const phase = useStore((s) => s.phase)
+  const turns = useStore((s) => s.turns)
   const history = useRef<Msg[]>([])
   const speaker = useRef<ReturnType<typeof createSpeaker> | null>(null)
   const voice = useRef<Voice | null>(null)
@@ -85,6 +105,23 @@ export default function App() {
   const booting = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const voicePoll = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Restore the current conversation's transcript once, on first mount — a
+  // reload shouldn't look like JARVIS forgot what was just said, even though
+  // (see resetConversation) the model himself genuinely has.
+  useEffect(() => {
+    const saved = chatHistory.loadCurrentTurns()
+    if (saved.length) store.getState().loadTurns(saved)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Persist the transcript as it grows. Debounced — a streaming answer can
+  // touch `turns` dozens of times a second via appendToLastTurn, and writing
+  // localStorage on every token would be both pointless and slow.
+  useEffect(() => {
+    const t = setTimeout(() => chatHistory.saveCurrentTurns(turns), 800)
+    return () => clearTimeout(t)
+  }, [turns])
 
   // -- helpers --------------------------------------------------------------
 
@@ -137,7 +174,7 @@ export default function App() {
     s.pushTurn({ id: newId(), role: 'user', text: said })
     s.setPhase('thinking')
 
-    const spk = createSpeaker()
+    const spk = store.getState().muted ? silentSpeaker() : createSpeaker()
     speaker.current = spk
     sfx.duck(true)
     music.duck(true)
@@ -255,7 +292,7 @@ export default function App() {
     // Answer to his name. Deliberately NOT awaited any more: the microphone is
     // already open and the echo filter knows his voice, so the user can talk
     // straight over the greeting instead of waiting it out.
-    const greeting = createSpeaker()
+    const greeting = store.getState().muted ? silentSpeaker() : createSpeaker()
     speaker.current = greeting
     greeting.say(attention())
     void greeting.end()
@@ -312,8 +349,48 @@ export default function App() {
     store.getState().setCaption(text)
   }
 
+  /**
+   * A typed message, from the chat input. Deliberately not routed through
+   * onUtterance — there is no wake word to strip and no mishearing to guard
+   * against, it is exactly what the user wrote. Barges in the same way
+   * speaking over him does, so a typed follow-up during a long answer behaves
+   * the way everything else in this app behaves.
+   */
+  const onTyped = (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const phase = store.getState().phase
+    if (phase === 'offline' || phase === 'boot') return
+    if (phase === 'thinking' || phase === 'tooling' || phase === 'speaking') {
+      onSpeechStart()
+    }
+    void respond(trimmed)
+  }
+
   const onVoiceError = (message: string) => {
     store.getState().setError(message)
+  }
+
+  // -- chat history -----------------------------------------------------
+
+  /** A fresh start: blank transcript, blank display, and — because the agent's
+   *  memory lives on the socket rather than in anything we could reset
+   *  ourselves — a dropped and reopened bridge connection underneath it. */
+  const startNewConversation = () => {
+    chatHistory.newConversation()
+    store.getState().clearScreen('all')
+    resetConversation()
+  }
+
+  /** Continue a saved conversation: restore what was said, make it the one
+   *  future turns are appended to, and start the agent fresh underneath it —
+   *  its memory of the old exchange was never something this page could save
+   *  in the first place. */
+  const openConversation = (id: string) => {
+    chatHistory.setCurrentId(id)
+    store.getState().clearScreen('all')
+    store.getState().loadTurns(chatHistory.turnsFor(id))
+    resetConversation()
   }
 
   // -- power on -------------------------------------------------------------
@@ -577,8 +654,7 @@ export default function App() {
     pump()
 
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (isTypingTarget(e.target)) return
 
       // V auditions the next British voice installed on this machine. Which
       // ones exist varies per Mac, so hearing them beats trusting a ranking.
@@ -598,6 +674,26 @@ export default function App() {
         speaker.current = demo
         demo.say(`Voice set to ${name.replace(/\(.*?\)/g, '').trim()}. At your service, sir.`)
         void demo.end()
+        return
+      }
+
+      // C opens the typed-chat box — a silent alternative to the wake word for
+      // a noisy room or a shared desk. Bare C only, same reasoning as V.
+      if (e.key === 'c' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        store.getState().setChatOpen(!store.getState().chatOpen)
+        return
+      }
+
+      // Q mutes JARVIS — he keeps thinking and the transcript keeps filling
+      // in, he just stops making sound. Not M: SystemMonitor.tsx already owns
+      // that key for the system-stats overlay, and silently colliding with it
+      // was a real bug (pressing M fired both this and the monitor toggle).
+      if (e.key === 'q' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        const next = !store.getState().muted
+        if (next) silence()
+        store.getState().setMuted(next)
         return
       }
 
@@ -676,6 +772,13 @@ export default function App() {
       ) {
         onSpeechStart()
         listen(AWAIT_SPEECH_MS)
+      } else if (phase === 'waking' || phase === 'listening') {
+        // Already expecting a command — a second Space press while the mic
+        // is open for it should extend the window, not replay the wake
+        // greeting and restart the mic from onWake(''). That re-trigger is
+        // the "Space doesn't work right" bug: tap it twice in a row and the
+        // greeting audio restarted mid-word every time.
+        listen(AWAIT_SPEECH_MS)
       } else {
         onWake('')
       }
@@ -698,9 +801,12 @@ export default function App() {
   return (
     <>
       <Scene />
-      <Hud />
+      <Hud onSend={onTyped} />
       <Boot />
       <Diagnostics />
+      <Settings onNewConversation={startNewConversation} onOpenConversation={openConversation} />
+      <Tasks />
+      <SystemMonitor />
       <Ignition onStart={() => void powerOn()} />
     </>
   )

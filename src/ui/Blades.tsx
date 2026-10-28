@@ -5,6 +5,7 @@ import { BRIDGE_HTTP_URL } from '../config'
 import { sanitisePanelHtml } from './sanitise'
 import { frameSpan, peaceScroll, pinchCount } from '../lib/hands'
 import * as camera from '../lib/camera'
+import { isTypingTarget } from '../lib/keys'
 
 /**
  * The blades.
@@ -157,6 +158,55 @@ const CameraView = memo(function CameraView() {
   return <video ref={el} className="bl-camera" autoPlay playsInline muted />
 })
 
+/**
+ * Markup with a copy button on every code block.
+ *
+ * The sanitiser strips every event handler and script, by design — a model
+ * reading pages off the open web must never get to run code in this page.
+ * So the button can't be part of what the model writes; it's added here,
+ * after sanitisation, by trusted code using real DOM APIs (createElement +
+ * addEventListener, never an HTML string), which sidesteps that restriction
+ * instead of fighting it.
+ */
+const MarkupBody = memo(function MarkupBody({ html }: { html: string }) {
+  const root = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = root.current
+    if (!el) return
+    el.querySelectorAll('pre').forEach((pre) => {
+      if (pre.querySelector('.code-copy-btn')) return
+      pre.classList.add('code-block')
+      const code = pre.querySelector('code') ?? pre
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'code-copy-btn'
+      btn.textContent = 'Copy'
+      btn.addEventListener('click', () => {
+        void navigator.clipboard.writeText(code.textContent ?? '').then(
+          () => {
+            btn.textContent = 'Copied'
+            setTimeout(() => (btn.textContent = 'Copy'), 1500)
+          },
+          () => {
+            btn.textContent = 'Failed'
+            setTimeout(() => (btn.textContent = 'Copy'), 1500)
+          },
+        )
+      })
+      pre.appendChild(btn)
+    })
+  }, [html])
+
+  return (
+    <div
+      ref={root}
+      className="bl-markup p-body"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
+})
+
 const Body = memo(function Body({ blade }: { blade: Blade }) {
   if (blade.kind === 'camera') return <CameraView />
 
@@ -224,12 +274,7 @@ const Body = memo(function Body({ blade }: { blade: Blade }) {
   if (blade.kind === 'markup' && blade.html) {
     // Model-authored markup gets exactly the treatment panel markup gets.
     // There is one sanitiser, and this is it.
-    return (
-      <div
-        className="bl-markup p-body"
-        dangerouslySetInnerHTML={{ __html: sanitisePanelHtml(blade.html) }}
-      />
-    )
+    return <MarkupBody html={sanitisePanelHtml(blade.html)} />
   }
 
   return <p className="bl-note">Nothing to show.</p>
@@ -622,8 +667,7 @@ export function Blades() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!live.current) return
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (isTypingTarget(e.target)) return
       if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
 
       if (e.key === 'e') {

@@ -324,10 +324,129 @@ body::after {
   bottom: 44px;
   left: 0;
   right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
   text-align: center;
   font-size: 9px;
   opacity: 0.38;
   letter-spacing: 0.2em;
+}
+
+.hud-controls {
+  display: flex;
+  gap: 8px;
+  opacity: 1;
+}
+
+.hud-icon-btn {
+  font-family: inherit;
+  background: color-mix(in srgb, var(--accent) 8%, rgba(2, 10, 12, 0.5));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+  border-radius: 2px;
+  padding: 5px 10px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.hud-icon-btn:hover {
+  background: color-mix(in srgb, var(--accent) 18%, rgba(2, 10, 12, 0.6));
+}
+.hud-icon-btn.active {
+  background: var(--accent);
+  color: #01060c;
+}
+.hud-text-btn {
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.upload { position: relative; display: inline-flex; }
+.upload-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.upload-error {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 220px;
+  background: rgba(2, 10, 12, 0.95);
+  border: 1px solid #ff6b6b;
+  color: #ff6b6b;
+  border-radius: 2px;
+  padding: 5px 8px;
+  font-size: 9px;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  text-align: center;
+  z-index: 8;
+}
+
+/* The typed alternative to speaking. Sits where the caption does, since the
+   two are never both on screen — one is what he's hearing, the other what
+   he's about to read. */
+.chat-input {
+  position: absolute;
+  left: 50%;
+  bottom: 88px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  width: min(520px, 70vw);
+  z-index: 7;
+}
+.chat-input-field {
+  flex: 1;
+  background: color-mix(in srgb, var(--accent) 6%, rgba(2, 10, 12, 0.75));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 2px;
+  color: #eaf9ff;
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  padding: 9px 12px;
+  outline: none;
+}
+.chat-input-field::placeholder {
+  color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.chat-input-field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.chat-input-send {
+  font-family: inherit;
+  background: var(--accent);
+  color: #01060c;
+  border: none;
+  border-radius: 2px;
+  padding: 0 16px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.chat-input-send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+@media (max-width: 640px) {
+  .chat-input { width: min(400px, 92vw); bottom: 96px; }
+  .hud-controls { gap: 6px; }
+  .hud-icon-btn { padding: 4px 8px; font-size: 10px; }
+  .sysmon { left: 1rem; right: 1rem; bottom: 0.75rem; width: auto; }
+  .sysmon-grid { grid-template-columns: 1fr; }
 }
 
 kbd {
@@ -1541,6 +1660,375 @@ kbd {
 .diag-ok { color: #3ef2a8; }
 .diag-bad { color: #ff6b6b; }
 
+/* Settings — same instrument-panel idiom as .diag, but interactive. */
+.settings {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 20;
+  width: min(22rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  padding: 0.9rem 1rem;
+  background: rgba(2, 10, 12, 0.94);
+  border: 1px solid var(--accent, #19d8d2);
+  border-radius: 2px;
+  font-family: 'Chakra Petch', system-ui, sans-serif;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: #cfe6e3;
+  backdrop-filter: blur(6px);
+}
+
+.settings-head {
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  color: var(--accent, #19d8d2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.settings-sec {
+  margin: 0.8rem 0 0.4rem;
+  letter-spacing: 0.16em;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  color: #6d8886;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 0.5rem;
+}
+
+.settings-select {
+  width: 100%;
+  background: color-mix(in srgb, var(--accent) 8%, rgba(2, 10, 12, 0.6));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: #eaf9ff;
+  border-radius: 2px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 0.78rem;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: #a9c6c3;
+}
+.settings-row input[type='range'] { flex: 1; accent-color: var(--accent); }
+
+.settings-value {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--accent);
+  min-width: 2.6rem;
+  text-align: right;
+}
+
+.settings-note {
+  margin-top: 0.4rem;
+  font-size: 0.68rem;
+  opacity: 0.6;
+}
+
+.settings-swatches {
+  display: flex;
+  gap: 10px;
+}
+.settings-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+}
+.settings-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.settings-btn {
+  font-family: inherit;
+  background: color-mix(in srgb, var(--accent) 10%, rgba(2, 10, 12, 0.5));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+  border-radius: 2px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.settings-btn:hover { background: color-mix(in srgb, var(--accent) 20%, rgba(2, 10, 12, 0.6)); }
+.settings-btn-wide { width: 100%; text-align: center; }
+
+.settings-history {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 0.4rem;
+  max-height: 11rem;
+  overflow-y: auto;
+}
+
+.settings-hist-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.settings-hist-row.active .settings-hist-open { border-color: var(--accent); }
+
+.settings-hist-open {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: inherit;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #cfe6e3;
+  border-radius: 2px;
+  padding: 5px 8px;
+  font-size: 0.68rem;
+  cursor: pointer;
+  text-align: left;
+}
+.settings-hist-open:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+
+.settings-hist-count { opacity: 0.55; }
+
+.settings-hist-del {
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  color: #ff6b6b;
+  border-radius: 2px;
+  padding: 0 8px;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+.settings-hist-del:hover { background: rgba(255, 107, 107, 0.12); }
+
+/* Tasks — same instrument-panel idiom, opposite corner from Settings/
+   Diagnostics so K and S (or D) can both be open without overlapping. */
+.tasks {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  z-index: 20;
+  width: min(20rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  padding: 0.9rem 1rem;
+  background: rgba(2, 10, 12, 0.94);
+  border: 1px solid var(--accent, #19d8d2);
+  border-radius: 2px;
+  font-family: 'Chakra Petch', system-ui, sans-serif;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: #cfe6e3;
+  backdrop-filter: blur(6px);
+}
+
+.tasks-head {
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  color: var(--accent, #19d8d2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.tasks-add {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 0.6rem;
+}
+.tasks-input {
+  flex: 1;
+  background: color-mix(in srgb, var(--accent) 8%, rgba(2, 10, 12, 0.6));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: #eaf9ff;
+  border-radius: 2px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 0.76rem;
+  outline: none;
+}
+.tasks-input:focus { border-color: var(--accent); }
+
+.tasks-error {
+  color: #ff6b6b;
+  font-size: 0.68rem;
+  margin-bottom: 0.5rem;
+}
+
+.tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tasks-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tasks-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+.tasks-check input { accent-color: var(--accent); }
+.tasks-row.done .tasks-check span {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+/* ---------------------------------------------------------------------------
+   System Monitor (press M)
+
+   Unlike the diagnostics overlay this one is meant to be looked at, not just
+   consulted, so it borrows the same instrument language as the model's own
+   panels — .hud-metric, .hud-bar, .hud-sub — rather than the plain diag-row
+   table. Fixed opposite the diagnostics overlay (bottom-right vs. top-right)
+   so the two can be open at once without overlapping.
+   --------------------------------------------------------------------------- */
+
+.sysmon {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 20;
+  width: min(23rem, calc(100vw - 2rem));
+  padding: 0.85rem 1rem 1rem;
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--accent) 9%, rgba(2, 10, 12, 0.92)),
+    color-mix(in srgb, var(--accent) 3%, rgba(2, 10, 12, 0.96))
+  );
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  border-radius: 2px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 0 30px color-mix(in srgb, var(--accent) 18%, transparent);
+  /* Was none — the panel used to be a glance-only readout with nothing in it
+     to click. Now that it holds real sliders and buttons it has to accept
+     pointer events like any other overlay (.settings already does). */
+  pointer-events: auto;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.sysmon-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.85;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  padding-bottom: 0.45rem;
+  margin-bottom: 0.7rem;
+}
+
+.sysmon-refresh {
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+  border-radius: 2px;
+  width: 1.4rem;
+  height: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+.sysmon-refresh:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.sysmon-refresh:disabled { opacity: 0.4; cursor: default; }
+
+.sysmon-control-row { margin-top: 2px; }
+
+.sysmon-btn-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.sysmon-actions-row .settings-btn { flex: 1 1 auto; min-width: 5.5rem; }
+
+.sysmon-actions {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sysmon-status {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.66rem;
+  color: var(--accent);
+  opacity: 0.85;
+}
+.sysmon-status.failed { color: #ff6b6b; }
+
+.sysmon-updated {
+  margin-top: 10px;
+  font-size: 0.62rem;
+  opacity: 0.5;
+  text-align: right;
+}
+
+.sysmon-note {
+  margin: 0;
+}
+
+.sysmon-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 18px;
+}
+
+.sysmon-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sysmon-metric {
+  font-size: 22px;
+}
+
+.sysmon-unit-inline {
+  margin-left: 4px;
+  font-size: 0.5em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.sysmon-bar {
+  margin: 2px 0;
+}
+
 /* ------------------------------------------------------------------ blades */
 /*
    The blade stack — the surface for things meant to be looked at rather than
@@ -1689,6 +2177,51 @@ kbd {
 }
 
 .bl-markup { padding: 14px 16px; text-transform: none; letter-spacing: normal }
+
+.bl-markup pre {
+  position: relative;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 2px;
+  padding: 12px 14px;
+  margin: 10px 0;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.bl-markup code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.92em;
+}
+.bl-markup :not(pre) > code {
+  background: color-mix(in srgb, var(--accent) 10%, rgba(0, 0, 0, 0.3));
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+/* The copy button MarkupBody injects after sanitisation — see Blades.tsx. */
+.code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-family: 'Chakra Petch', system-ui, sans-serif;
+  background: color-mix(in srgb, var(--accent) 14%, rgba(2, 10, 12, 0.7));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+  border-radius: 2px;
+  padding: 3px 9px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+.code-block:hover .code-copy-btn,
+.code-copy-btn:focus-visible {
+  opacity: 1;
+}
 
 .bl-note {
   padding: 22px;
