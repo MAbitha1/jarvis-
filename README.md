@@ -62,7 +62,16 @@ language.
 
 ## Quick start
 
-First, install, then start it:
+> GitHub only stores the code — JARVIS cannot run from this page. Download it
+> and run it on your own laptop, as below.
+
+**Easiest, on Windows:** install [Node.js](https://nodejs.org) and log in to
+Claude Code (see Requirements), then click **Code → Download ZIP** above, unzip
+it, and double-click **`Start JARVIS.bat`**. The first run installs everything;
+JARVIS then opens in your browser by itself. Keep the black window open while
+you use it.
+
+**Or from a terminal:** install, then start it:
 
 ```bash
 npm install

@@ -117,9 +117,11 @@ console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')
 run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).
-run('face', process.execPath, ['node_modules/vite/bin/vite.js'], '35', {})
+// --open puts the page in front of the user as soon as it is ready, on
+// whichever port Vite ends up on — so nobody has to find the URL in the log.
+run('face', process.execPath, ['node_modules/vite/bin/vite.js', '--open'], '35', {})
 
 console.log(
-  '\nWhen it says the dev server is ready, open the URL it prints in Chrome,\n' +
-    'click INITIALISE, and say "Hey Jarvis". Ctrl-C stops everything.\n',
+  '\nJARVIS opens in your browser when the dev server is ready (or open the URL\n' +
+    'it prints in Chrome). Click INITIALISE and say "Hey Jarvis". Ctrl-C stops everything.\n',
 )
