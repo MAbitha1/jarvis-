@@ -15,6 +15,26 @@ listens through the browser's own speech, and everything still works.
 
 ---
 
+## In this version
+
+- **Tamil and Tanglish.** Speak either; JARVIS answers in English. For Tamil
+  speech, press **S** and set *Recognition language* to *Tamil (India)*.
+- **Your laptop.** Battery, charger, RAM, storage and Wi-Fi status.
+- **Live info.** AI news, news, sports, and weather for where you are, with no
+  API key needed.
+- **PC control (Windows).** "Downloads folder open pannu", "Wi-Fi off pannu",
+  "Claude open pannu", "Antigravity open pannu".
+- **Build projects.** "Claude open panni Diwali website panni thaa" opens the
+  Claude desktop app, starts a new chat, types the request and sends it, live
+  on screen. "Build me a to-do app" builds it in the background into
+  `~/JARVIS Projects` and opens it when done.
+
+Folders, Wi-Fi, apps and the Claude-app build need **Windows 10 or 11**; the
+Claude-app build also needs the [Claude desktop app](https://claude.com/download)
+installed and logged in.
+
+---
+
 ## Requirements
 
 **In one line:** a Claude Code subscription, plus two free things every computer

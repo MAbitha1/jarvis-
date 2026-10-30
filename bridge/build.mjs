@@ -64,14 +64,31 @@ export function inside(dir, p) {
  * scroll-reveal class: a blank page, reported as done. A throwaway profile
  * keeps this apart from the user's own running Chrome.
  */
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+const PROGRAM_DIRS = [
+  process.env.ProgramFiles ?? 'C:\\Program Files',
+  process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)',
+  join(homedir(), 'AppData', 'Local'),
+]
+
+/** Chrome first, then Edge, from wherever this machine installed it — the
+ *  default spot is not the only one, and other people's laptops differ. */
+const BROWSERS = PROGRAM_DIRS.flatMap((d) => [
+  join(d, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  join(d, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+])
+
+async function firstExisting(paths) {
+  for (const p of paths) if (await stat(p).catch(() => null)) return p
+  return null
+}
 
 export async function checkPage(dir, file = 'index.html') {
   const page = join(dir, file)
   if (!inside(dir, page) || !(await stat(page).catch(() => null))) {
     return { ok: false, problems: [`${file} does not exist yet.`] }
   }
-  if (!(await stat(CHROME).catch(() => null))) {
+  const CHROME = await firstExisting(BROWSERS)
+  if (!CHROME) {
     return { ok: true, problems: [], skipped: 'Chrome is not installed, so the page could not be checked.' }
   }
   const profile = await mkdtemp(join(tmpdir(), 'jarvis-check-'))
@@ -306,8 +323,13 @@ const CLAUDE_CHAT_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'script
  *  launcher: a .cmd needs cmd.exe, which mangles quoted paths with spaces —
  *  and both "Antigravity IDE" and "JARVIS Projects" have one. */
 const EDITORS = {
-  antigravity: join(homedir(), 'AppData', 'Local', 'Programs', 'Antigravity IDE', 'Antigravity.exe'),
-  vscode: join(homedir(), 'AppData', 'Local', 'Programs', 'Microsoft VS Code', 'Code.exe'),
+  antigravity: [join(homedir(), 'AppData', 'Local', 'Programs'), ...PROGRAM_DIRS.slice(0, 2)].flatMap((d) => [
+    join(d, 'Antigravity IDE', 'Antigravity.exe'),
+    join(d, 'Antigravity', 'Antigravity.exe'),
+  ]),
+  vscode: [join(homedir(), 'AppData', 'Local', 'Programs'), ...PROGRAM_DIRS.slice(0, 2)].map((d) =>
+    join(d, 'Microsoft VS Code', 'Code.exe'),
+  ),
 }
 
 export function buildServer({ model }) {
@@ -390,8 +412,8 @@ export function buildServer({ model }) {
             dir = candidate
           }
           if (!dir) return refuse('No project has been built yet to open.')
-          const launcher = EDITORS[args.editor]
-          if (!(await stat(launcher).catch(() => null))) return refuse(`${args.editor} is not installed.`)
+          const launcher = await firstExisting(EDITORS[args.editor])
+          if (!launcher) return refuse(`${args.editor} is not installed.`)
           spawn(launcher, [dir], { detached: true, stdio: 'ignore' }).unref()
           return ok(`Opened ${dir} in ${args.editor}.`)
         },
