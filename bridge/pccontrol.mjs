@@ -320,6 +320,37 @@ export async function openFolder(name) {
   return r
 }
 
+/** What people call an app, against what the Start menu calls it. */
+const APP_ALIASES = {
+  'vs code': 'visual studio code', vscode: 'visual studio code', code: 'visual studio code',
+  chrome: 'google chrome', edge: 'microsoft edge', word: 'word', excel: 'excel',
+  'claude app': 'claude', 'claude desktop': 'claude',
+}
+
+/**
+ * Open an installed app by name — "open Claude", "Antigravity open pannu".
+ *
+ * Matched against the Start menu's own list (list-apps.ps1): exact name
+ * first, then a name starting with the request, then one containing it, the
+ * shortest winning, so "claude" opens Claude rather than some "Claude Helper".
+ */
+export async function openApp(name) {
+  const want0 = String(name ?? '').trim().toLowerCase().replace(/\s+app$/, '')
+  if (!want0) throw new Error('No app was named.')
+  const want = APP_ALIASES[want0] ?? want0
+  const { apps } = await runPs('list-apps.ps1')
+  const named = (Array.isArray(apps) ? apps : [apps]).filter((a) => a?.name && a?.id)
+  const lower = (a) => a.name.toLowerCase()
+  const byLength = (a, b) => a.name.length - b.name.length
+  const hit =
+    named.find((a) => lower(a) === want) ??
+    named.filter((a) => lower(a).startsWith(want)).sort(byLength)[0] ??
+    named.filter((a) => lower(a).includes(want)).sort(byLength)[0]
+  if (!hit) throw new Error(`No installed app called "${name}" was found.`)
+  spawn('explorer.exe', [`shell:AppsFolder\\${hit.id}`], { detached: true, stdio: 'ignore' }).unref()
+  return { name: hit.name }
+}
+
 const SCREENSHOT_DIR = join(homedir(), 'Pictures', 'JARVIS')
 
 export async function takeScreenshot() {
@@ -579,6 +610,22 @@ export function pcServer({ readSysInfo, afterTurn } = {}) {
               `Opened ${r.path} in File Explorer.` +
                 (r.others.length ? ` Other matches: ${r.others.join('; ')}.` : ''),
             )
+          } catch (err) {
+            return refuse(String(err.message ?? err))
+          }
+        },
+      ),
+
+      tool(
+        'open_app',
+        'Open an installed app on this laptop by name — Claude, Antigravity, ' +
+          'VS Code, Chrome, WhatsApp, Word, Excel, or anything else in the ' +
+          'Start menu. Just open it — no need to ask first.',
+        { name: z.string().min(1).describe('The app as the user said it, e.g. "claude", "vs code".') },
+        async (args) => {
+          try {
+            const r = await openApp(args.name)
+            return ok(`${r.name} is opening.`)
           } catch (err) {
             return refuse(String(err.message ?? err))
           }

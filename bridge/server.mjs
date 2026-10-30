@@ -22,6 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { searchServer } from './search.mjs'
+import { buildServer } from './build.mjs'
 import { taskServer, loadTasks, addTask, setTaskDone, editTaskText, deleteTask } from './tasks.mjs'
 import { fileServer, saveUpload } from './files.mjs'
 import { readSysInfo } from './sysinfo.mjs'
@@ -326,6 +327,11 @@ function decideTool(name) {
     // refused out loud while the slider beside it worked. Everything here is
     // local and undoable, and wifi_set off still demands its own confirm.
     if (server === 'jarvis_pc') return true
+
+    // The project builder. Its coder agent writes files, but only inside a
+    // fresh folder under ~/JARVIS Projects, with file tools and nothing else
+    // — build.mjs enforces that on every one of the coder's own calls.
+    if (server === 'jarvis_build') return true
 
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
@@ -1582,6 +1588,9 @@ wss.on('connection', (socket) => {
         // instead of a circular one. decideTool allows the whole server, the
         // same as the dashboard's /pc/ buttons — see the note there.
         jarvis_pc: pcServer({ readSysInfo, afterTurn: (fn) => afterTurnQueue.push(fn) }),
+        // Builds websites and small apps with a Claude coding agent, in the
+        // background — see build.mjs.
+        jarvis_build: buildServer({ model: MODEL }),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
