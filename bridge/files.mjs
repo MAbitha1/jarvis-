@@ -91,11 +91,27 @@ async function findStoredFile(id) {
   return entries.find((e) => e.startsWith(`${id}__`)) ?? null
 }
 
+/** The most recently saved upload, for when the user says "the file I
+ *  uploaded" in a conversation that never saw its id — after a page reload or
+ *  "New conversation", the file is still on disk but the id is not in memory. */
+async function latestStoredFile() {
+  await ensureDir()
+  const entries = await readdir(DIR)
+  let latest = null
+  for (const name of entries) {
+    const s = await stat(join(DIR, name)).catch(() => null)
+    if (s && (!latest || s.mtimeMs > latest.mtime)) latest = { name, mtime: s.mtimeMs }
+  }
+  return latest?.name ?? null
+}
+
 /** Extract readable text from a saved upload. Returns `{ filename, text }`
  *  or throws a plain-English error — never silently returns nothing. */
 export async function extractText(id) {
-  const stored = await findStoredFile(id)
-  if (!stored) throw new Error('No uploaded file matches that id.')
+  const stored = id ? await findStoredFile(id) : await latestStoredFile()
+  if (!stored) {
+    throw new Error(id ? 'No uploaded file matches that id.' : 'Nothing has been uploaded yet.')
+  }
   const path = join(DIR, stored)
   const filename = stored.slice(stored.indexOf('__') + 2)
   const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
@@ -128,16 +144,24 @@ export function fileServer() {
     instructions:
       'Read back the text of a file the user just uploaded through the HUD, ' +
       'so you can summarise or answer questions about it. Call this right ' +
-      "after the user says they've uploaded something.",
+      "after the user says they've uploaded something, and whenever they " +
+      'ask about "the file" or "the document" — even with no id in this ' +
+      'conversation, since uploads outlive it. Never say there is no upload ' +
+      'without calling this first.',
     tools: [
       tool(
         'summarize_file',
         'Extract the text of an uploaded PDF or TXT file so you can summarise ' +
-          'it or answer questions about it. Takes the id the upload returned.',
-        { id: z.string().min(1).describe('The id returned when the file was uploaded.') },
+          'it or answer questions about it. Pass the id the upload returned ' +
+          'if you have it; leave it out to read the most recent upload.',
+        {
+          id: z
+            .string()
+            .optional()
+            .describe('The id returned when the file was uploaded. Omit for the latest upload.'),
+        },
         async (args) => {
           const id = String(args.id ?? '').trim()
-          if (!id) return refuse('No file id was given.')
           try {
             const { filename, text } = await extractText(id)
             const trimmed = text.trim()
