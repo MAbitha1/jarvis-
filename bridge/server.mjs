@@ -1377,6 +1377,10 @@ function apiFailureMessage(msg) {
   return notice ? `The request to Claude failed: ${notice}` : RESULT_FAILURES.default
 }
 
+/** "wifi on", "turn on the wifi", "wifi on pannu", "வைஃபை ஆன் பண்ணு". */
+const WIFI_ON_REQUEST =
+  /(wi-?fi|வைஃபை).*\b(on|enable)\b|\b(turn\s+on|switch\s+on|enable)\b.*wi-?fi|(wi-?fi|வைஃபை).*(ஆன்|on\s*pannu)/i
+
 wss.on('connection', (socket) => {
   console.log('[jarvis] client connected')
 
@@ -1498,6 +1502,9 @@ wss.on('connection', (socket) => {
    */
   let settling = Promise.resolve()
   let finishTurn = null
+  /** Actions a tool asked to run once this turn's reply is out — see
+   *  pcServer's afterTurn. Drained where a turn is genuinely over. */
+  const afterTurnQueue = []
 
   const turnFinished = () =>
     new Promise((resolve) => {
@@ -1574,7 +1581,7 @@ wss.on('connection', (socket) => {
         // way — this is what keeps that a one-directional dependency
         // instead of a circular one. decideTool allows the whole server, the
         // same as the dashboard's /pc/ buttons — see the note there.
-        jarvis_pc: pcServer({ readSysInfo }),
+        jarvis_pc: pcServer({ readSysInfo, afterTurn: (fn) => afterTurnQueue.push(fn) }),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
@@ -1728,6 +1735,7 @@ wss.on('connection', (socket) => {
             // the only place a turn is genuinely over.
             finishTurn?.()
             finishTurn = null
+            for (const fn of afterTurnQueue.splice(0)) fn()
             // One turn's tool ids are never referred to again, and these
             // otherwise grow for as long as the socket is open.
             seenTools.clear()
@@ -1785,6 +1793,27 @@ wss.on('connection', (socket) => {
        */
       const text = msg.text
       const id = typeof msg.id === 'string' ? msg.id : null
+
+      // "Wi-Fi on" while Wi-Fi is off. The agent lives on the internet, so
+      // with the radio off it cannot even hear the request to turn it back
+      // on — the one command that has to work offline is the one the model
+      // can never answer. Caught here, and only when offline, so with a
+      // connection every request still goes through the model as normal.
+      if (WIFI_ON_REQUEST.test(text) && !/\boff\b/i.test(text)) {
+        void (async () => {
+          if ((await checkInternet()).online) return deliverToAgent()
+          const r = await wifiSet(true, false).catch((err) => ({ ok: false, error: err.message }))
+          const said = r.ok
+            ? 'Wi-Fi is back on, sir. It should reconnect in a moment.'
+            : `I'm afraid I could not turn Wi-Fi on: ${r.error}`
+          send({ type: 'text', delta: said, ask: id })
+          send({ type: 'done', text: said, costUsd: 0, ask: id })
+        })()
+        return
+      }
+      deliverToAgent()
+
+      function deliverToAgent() {
       void settling.then(() => {
         answering = id
         if (deliver) {
@@ -1795,6 +1824,7 @@ wss.on('connection', (socket) => {
           inbox.push(text)
         }
       })
+      }
     }
 
     if (msg.type === 'reply' && typeof msg.id === 'string') {

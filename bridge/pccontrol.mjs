@@ -3,9 +3,9 @@ import { z } from 'zod'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { homedir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir, stat } from 'node:fs/promises'
 import si from 'systeminformation'
 
 /**
@@ -135,19 +135,11 @@ export async function adjustBrightness(delta) {
 // Wi-Fi / network
 // ---------------------------------------------------------------------------
 
-/** The machine's wireless adapters, from systeminformation — never from
- *  parsing `netsh interface show interface`, whose own "Type" column does
- *  not distinguish Wi-Fi from Ethernet. This is the one and only source the
- *  on/off toggle below is allowed to pick a target from. */
-async function wirelessInterfaceNames() {
-  const list = await si.wifiInterfaces().catch(() => [])
-  return (Array.isArray(list) ? list : []).map((i) => i.iface).filter(Boolean)
-}
-
 export async function checkWifiStatus() {
-  const [ifaces, conns] = await Promise.all([
+  const [ifaces, conns, radioOn] = await Promise.all([
     si.wifiInterfaces().catch(() => []),
     si.wifiConnections().catch(() => []),
+    wifiRadioOn(),
   ])
   if (!Array.isArray(ifaces) || ifaces.length === 0) {
     return { hasWifiAdapter: false, connected: false }
@@ -155,6 +147,7 @@ export async function checkWifiStatus() {
   const conn = Array.isArray(conns) ? conns[0] : null
   return {
     hasWifiAdapter: true,
+    radioOn,
     adapter: ifaces[0].iface,
     connected: Boolean(conn?.ssid),
     ssid: conn?.ssid ?? null,
@@ -174,14 +167,31 @@ export async function checkInternet() {
   }
 }
 
+const WIFI_OFF_FALLBACK_MS = 30_000
+
+/** Whether the Wi-Fi radio is switched on — the quick-settings toggle, which
+ *  connection status alone can't tell apart from "on but not connected". */
+export async function wifiRadioOn() {
+  try {
+    const r = await runPs('wifi-radio.ps1')
+    return r.state === 'On'
+  } catch {
+    return null
+  }
+}
+
 /**
- * Turn the (one and only, discovered) wireless adapter on or off.
+ * Turn Wi-Fi on or off.
  *
  * Turning off requires `confirm: true` — see pcServer()'s tool description,
  * which tells the model to ask the user first and call back only once they
- * agree. Turning on never needs it. Either direction can come back reporting
- * the OS denied the admin-only call; that is returned as a normal result,
- * never retried with elevated rights.
+ * agree. Turning on never needs it.
+ *
+ * This switches the radio, as the quick-settings Wi-Fi button does, rather
+ * than the adapter's admin state through netsh. The netsh route needs
+ * Administrator rights, so from a normal bridge every single call failed with
+ * "Access is denied"; and a disabled adapter drops out of wifiInterfaces(),
+ * so even an elevated bridge could not have found it again to turn it back on.
  */
 export async function wifiSet(on, confirm) {
   if (!on && !confirm) {
@@ -189,27 +199,11 @@ export async function wifiSet(on, confirm) {
       'Turning Wi-Fi off needs confirmation — ask the user first, then call again with confirm: true.',
     )
   }
-  const names = await wirelessInterfaceNames()
-  if (names.length === 0) {
-    return { ok: false, error: 'No wireless adapter was found on this machine.' }
-  }
   try {
-    const r = await runPs('wifi-adapter.ps1', [
-      '-Name', names[0],
-      '-State', on ? 'enabled' : 'disabled',
-    ])
-    return { ok: true, adapter: r.name, on }
+    const r = await runPs('wifi-radio.ps1', ['-State', on ? 'On' : 'Off'])
+    return { ok: true, adapter: r.name, on: r.state === 'On' }
   } catch (err) {
-    const msg = String(err.message ?? err)
-    const denied = /access is denied/i.test(msg)
-    return {
-      ok: false,
-      error: denied
-        ? 'Windows denied the request — changing an adapter\'s admin state needs ' +
-          'Administrator privileges. Run the bridge as Administrator, or use ' +
-          'Windows Settings to toggle Wi-Fi.'
-        : msg,
-    }
+    return { ok: false, error: String(err.message ?? err) }
   }
 }
 
@@ -225,6 +219,105 @@ export function openNotepad() {
 export function openCalculator() {
   spawn('calc.exe', [], { detached: true, stdio: 'ignore', windowsHide: false }).unref()
   return { ok: true }
+}
+
+/**
+ * Open a folder in File Explorer, from however the user named it.
+ *
+ * Resolved in order: a well-known folder ("downloads", "photos"), a drive
+ * ("D drive"), a full path, and otherwise a search by folder name under the
+ * home folder and the other drives. Whatever is opened is a directory that
+ * exists — the name is matched against the disk, never handed to a shell.
+ */
+const KNOWN_FOLDERS = {
+  desktop: 'Desktop',
+  document: 'Documents', documents: 'Documents', docs: 'Documents',
+  download: 'Downloads', downloads: 'Downloads',
+  picture: 'Pictures', pictures: 'Pictures', photo: 'Pictures', photos: 'Pictures',
+  music: 'Music', song: 'Music', songs: 'Music',
+  video: 'Videos', videos: 'Videos',
+  home: '', user: '',
+}
+
+const SKIP_DIRS = new Set([
+  'appdata', 'application data', 'local settings', 'node_modules', '.git',
+  'windows', 'program files', 'program files (x86)', 'programdata',
+  '$recycle.bin', 'system volume information', 'recovery',
+])
+
+async function isDir(p) {
+  return (await stat(p).catch(() => null))?.isDirectory() ?? false
+}
+
+/** Breadth-first, so the shallowest match — usually the one meant — is found
+ *  first, and bounded so a huge drive can't stall a spoken answer. */
+async function findFolders(name, roots) {
+  const want = name.toLowerCase()
+  const exact = []
+  const partial = []
+  const queue = roots.map((r) => ({ dir: r, depth: 0 }))
+  let visited = 0
+  const deadline = Date.now() + 6000
+  while (queue.length && visited < 20_000 && Date.now() < deadline && exact.length < 5) {
+    const { dir, depth } = queue.shift()
+    visited++
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      const lower = e.name.toLowerCase()
+      if (SKIP_DIRS.has(lower) || lower.startsWith('.')) continue
+      const full = join(dir, e.name)
+      if (lower === want) exact.push(full)
+      else if (lower.includes(want) && partial.length < 5) partial.push(full)
+      if (depth < 4) queue.push({ dir: full, depth: depth + 1 })
+    }
+  }
+  return exact.length ? exact : partial
+}
+
+async function driveRoots() {
+  const roots = []
+  for (const letter of 'CDEFGH') {
+    if (await isDir(`${letter}:\\`)) roots.push(`${letter}:\\`)
+  }
+  return roots
+}
+
+export async function resolveFolder(name) {
+  const raw = String(name ?? '').trim().replace(/^["']|["']$/g, '')
+  if (!raw) throw new Error('No folder was named.')
+  const home = homedir()
+  const key = raw.toLowerCase().replace(/\s+folder$/, '').trim()
+
+  if (key in KNOWN_FOLDERS) {
+    const sub = KNOWN_FOLDERS[key]
+    for (const p of [join(home, sub), join(home, 'OneDrive', sub)]) {
+      if (await isDir(p)) return { path: p, others: [] }
+    }
+  }
+
+  const drive = key.match(/^([a-z])(?::\\?|\s*drive)$/)
+  if (drive) {
+    const p = `${drive[1].toUpperCase()}:\\`
+    if (await isDir(p)) return { path: p, others: [] }
+    throw new Error(`There is no ${drive[1].toUpperCase()} drive on this machine.`)
+  }
+
+  if (isAbsolute(raw)) {
+    if (await isDir(raw)) return { path: raw, others: [] }
+    throw new Error(`${raw} is not a folder on this machine.`)
+  }
+
+  const otherDrives = (await driveRoots()).filter((r) => !r.startsWith('C'))
+  const found = await findFolders(key, [home, ...otherDrives])
+  if (!found.length) throw new Error(`No folder called "${raw}" was found.`)
+  return { path: found[0], others: found.slice(1) }
+}
+
+export async function openFolder(name) {
+  const r = await resolveFolder(name)
+  spawn('explorer.exe', [r.path], { detached: true, stdio: 'ignore' }).unref()
+  return r
 }
 
 const SCREENSHOT_DIR = join(homedir(), 'Pictures', 'JARVIS')
@@ -297,7 +390,10 @@ function describeSysInfo(info) {
   return lines.join(' ')
 }
 
-export function pcServer({ readSysInfo } = {}) {
+/** `afterTurn(fn)` runs fn once the current agent turn has finished — the
+ *  bridge's own per-connection hook, used to cut Wi-Fi only after the reply
+ *  about cutting it has been delivered. */
+export function pcServer({ readSysInfo, afterTurn } = {}) {
   return createSdkMcpServer({
     name: 'jarvis_pc',
     version: '1.0.0',
@@ -405,6 +501,7 @@ export function pcServer({ readSysInfo } = {}) {
       tool('check_wifi_status', 'Wi-Fi adapter and connection status.', {}, async () => {
         const r = await checkWifiStatus()
         if (!r.hasWifiAdapter) return ok('No wireless adapter was found on this machine.')
+        if (r.radioOn === false) return ok('Wi-Fi is switched off.')
         return ok(
           r.connected
             ? `Connected to ${r.ssid}${r.signalQuality != null ? ` at ${r.signalQuality} percent signal quality` : ''}.`
@@ -422,8 +519,9 @@ export function pcServer({ readSysInfo } = {}) {
         'Turn the Wi-Fi adapter on or off. Turning it OFF requires confirm: ' +
           'true — ask the user first ("turning off Wi-Fi may disconnect us — ' +
           'are you sure?"), wait for a yes, then call again with confirm set. ' +
-          'Turning it on needs no confirmation. May fail if the bridge is not ' +
-          'running as Administrator; report that plainly if it does.',
+          'Turning it on needs no confirmation. Once it is off you cannot ' +
+          'reach the internet, so tell them in the same sentence that they ' +
+          'can type "wifi on" or use the Wi-Fi button to bring it back.',
         {
           on: z.boolean().describe('true to turn Wi-Fi on, false to turn it off.'),
           confirm: z
@@ -433,9 +531,54 @@ export function pcServer({ readSysInfo } = {}) {
         },
         async (args) => {
           try {
+            // Off is deferred to the end of this turn. The reply to "yes, turn
+            // it off" still has to come back from the model over this very
+            // connection; with the radio cut first, the turn hung for good
+            // and never finished its sentence. A fixed few seconds was not
+            // enough either — a considered reply can take longer than that.
+            if (!args.on && args.confirm) {
+              if ((await wifiRadioOn()) === null) {
+                return refuse('No Wi-Fi radio was found on this machine.')
+              }
+              let fired = false
+              const fire = () => {
+                if (fired) return
+                fired = true
+                void wifiSet(false, true)
+              }
+              afterTurn?.(fire)
+              // In case the turn never reports finishing.
+              setTimeout(fire, WIFI_OFF_FALLBACK_MS)
+              return ok(
+                'Wi-Fi switches off as soon as your reply has been sent. Say ' +
+                  'now, briefly, that it is going off, and that they can type ' +
+                  '"wifi on" or use the Wi-Fi button to bring it back.',
+              )
+            }
             const r = await wifiSet(args.on, args.confirm)
             if (!r.ok) return refuse(r.error)
             return ok(`Wi-Fi is now ${r.on ? 'on' : 'off'}.`)
+          } catch (err) {
+            return refuse(String(err.message ?? err))
+          }
+        },
+      ),
+
+      tool(
+        'open_folder',
+        'Open a folder in File Explorer on this laptop. Pass the folder as the ' +
+          'user said it: a known folder (Downloads, Documents, Desktop, ' +
+          'Pictures, Music, Videos), a drive ("D drive"), a full path, or any ' +
+          'folder name, which is searched for under their home folder and ' +
+          'drives. Just open it — no need to ask first.',
+        { name: z.string().min(1).describe('The folder, e.g. "downloads", "D drive", "jarvis".') },
+        async (args) => {
+          try {
+            const r = await openFolder(args.name)
+            return ok(
+              `Opened ${r.path} in File Explorer.` +
+                (r.others.length ? ` Other matches: ${r.others.join('; ')}.` : ''),
+            )
           } catch (err) {
             return refuse(String(err.message ?? err))
           }
