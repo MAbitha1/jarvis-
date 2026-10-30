@@ -36,14 +36,89 @@ const refuse = (text) => ({ isError: true, content: [{ type: 'text', text }] })
  *  -friction real search API for a machine with no MCP server set up yet. */
 const SERPER_URL = 'https://google.serper.dev/search'
 
+/**
+ * Weather, with no key and no question back.
+ *
+ * Without this, "what's the weather today" came back as "Which city?" — the
+ * model had no location and nothing to look one up with. Open-Meteo needs no
+ * key; when no city is named, ipwho.is places the machine from its public IP
+ * (city-level, which is all a forecast needs).
+ */
+const WMO = {
+  0: 'clear sky', 1: 'mainly clear', 2: 'partly cloudy', 3: 'overcast',
+  45: 'fog', 48: 'freezing fog', 51: 'light drizzle', 53: 'drizzle',
+  55: 'heavy drizzle', 61: 'light rain', 63: 'rain', 65: 'heavy rain',
+  66: 'freezing rain', 67: 'heavy freezing rain', 71: 'light snow', 73: 'snow',
+  75: 'heavy snow', 77: 'snow grains', 80: 'light showers', 81: 'showers',
+  82: 'violent showers', 85: 'snow showers', 86: 'heavy snow showers',
+  95: 'thunderstorm', 96: 'thunderstorm with hail', 99: 'thunderstorm with heavy hail',
+}
+
+async function getJson(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+async function locate(city) {
+  if (city) {
+    const g = await getJson(
+      `https://geocoding-api.open-meteo.com/v1/search?count=1&name=${encodeURIComponent(city)}`,
+    )
+    const r = g?.results?.[0]
+    if (!r) return null
+    return { name: [r.name, r.admin1, r.country].filter(Boolean).join(', '), lat: r.latitude, lon: r.longitude }
+  }
+  const ip = await getJson('https://ipwho.is/?fields=success,city,region,country,latitude,longitude')
+  if (!ip?.success) return null
+  return { name: [ip.city, ip.region, ip.country].filter(Boolean).join(', '), lat: ip.latitude, lon: ip.longitude }
+}
+
+export async function weatherReport(city) {
+  const place = await locate(city?.trim())
+  if (!place) throw new Error(city ? `Could not find a place called "${city}".` : 'Could not work out where this machine is.')
+  const w = await getJson(
+    `https://api.open-meteo.com/v1/forecast?latitude=${place.lat}&longitude=${place.lon}` +
+      '&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m' +
+      '&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code' +
+      '&timezone=auto&forecast_days=2',
+  )
+  const c = w.current
+  const d = w.daily
+  const day = (i, label) =>
+    `${label}: ${WMO[d.weather_code[i]] ?? 'unknown'}, ${d.temperature_2m_min[i]} to ` +
+    `${d.temperature_2m_max[i]} °C, ${d.precipitation_probability_max[i] ?? 0}% chance of rain.`
+  return [
+    `Weather for ${place.name}${city ? '' : ' (located from this machine\'s internet connection)'}.`,
+    `Now: ${WMO[c.weather_code] ?? 'unknown'}, ${c.temperature_2m} °C (feels like ` +
+      `${c.apparent_temperature} °C), humidity ${c.relative_humidity_2m}%, wind ${c.wind_speed_10m} km/h.`,
+    day(0, 'Today'),
+    day(1, 'Tomorrow'),
+  ].join('\n')
+}
+
 export function searchServer() {
   return createSdkMcpServer({
     name: 'jarvis_search',
     version: '1.0.0',
     instructions:
-      'Live web search for anything time-sensitive or uncertain. Refuses ' +
-      'plainly, rather than guessing, when no key is configured.',
+      'Live web search for anything time-sensitive or uncertain, and ' +
+      'get_weather for any weather question — it finds the user\'s location ' +
+      'itself, so never ask which city unless they name a different one.',
     tools: [
+      tool(
+        'get_weather',
+        'Current weather plus today and tomorrow\'s forecast. Leave city out ' +
+          'for the user\'s own location, detected automatically.',
+        { city: z.string().optional().describe('A city to check instead of the user\'s own.') },
+        async (args) => {
+          try {
+            return ok(await weatherReport(args.city))
+          } catch (err) {
+            return refuse(`Weather lookup failed: ${err?.message ?? err}`)
+          }
+        },
+      ),
       tool(
         'web_search',
         SEARCH_DESCRIPTION,

@@ -22,6 +22,10 @@ export const LANGUAGE_OPTIONS: Array<{ code: string; label: string }> = [
   { code: 'en-GB', label: 'English (UK)' },
   { code: 'en-AU', label: 'English (Australia)' },
   { code: 'hi-IN', label: 'Hindi (India)' },
+  // Chrome's recogniser writes ta-IN out in Tamil script; the bridge's system
+  // prompt has JARVIS understand that (and Tanglish) and answer in English,
+  // since Windows ships no Tamil voice to speak a Tamil reply with.
+  { code: 'ta-IN', label: 'Tamil (India)' },
 ]
 
 export function getRecognitionLanguage(): string {

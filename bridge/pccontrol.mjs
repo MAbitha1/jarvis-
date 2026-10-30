@@ -282,11 +282,16 @@ function describeSysInfo(info) {
     ),
     describeSection('Battery', info.battery, (b) =>
       b.hasBattery
-        ? `Battery at ${b.percent ?? '—'} percent, ${b.isCharging ? 'charging' : 'on battery'}.`
+        ? `Battery at ${b.percent ?? '—'} percent, ` +
+          (b.isCharging ? 'charger plugged in and charging.' : 'charger not plugged in, running on battery.')
         : 'No battery detected.',
     ),
+    // Worded so it can't be read as part of the battery line: a bare
+    // "Connected via wireless." came back as "charging on wireless".
     describeSection('Network', info.network, (n) =>
-      n.connected ? `Connected${n.type ? ` via ${n.type}` : ''}.` : 'Not connected.',
+      n.connected
+        ? `Internet connection: ${n.type === 'wireless' ? 'Wi-Fi' : (n.type ?? 'connected')}${n.iface ? ` (${n.iface})` : ''}.`
+        : 'Internet connection: not connected.',
     ),
   ]
   return lines.join(' ')
