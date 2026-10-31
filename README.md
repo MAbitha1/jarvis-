@@ -62,6 +62,9 @@ language.
 
 ## Quick start
 
+> **New here?** Follow the illustrated step-by-step
+> [JARVIS Setup Visual Guide (PDF)](JARVIS_Setup_Visual_Guide.pdf).
+
 > GitHub only stores the code — JARVIS cannot run from this page. Download it
 > and run it on your own laptop, as below.
 
