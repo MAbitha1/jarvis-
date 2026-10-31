@@ -137,9 +137,44 @@ console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')
 run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).
-// --open puts the page in front of the user as soon as it is ready, on
-// whichever port Vite ends up on — so nobody has to find the URL in the log.
-run('face', process.execPath, ['node_modules/vite/bin/vite.js', '--open'], '35', {})
+const face = run('face', process.execPath, ['node_modules/vite/bin/vite.js'], '35', {})
+
+/**
+ * Put the page in front of the user as soon as it is ready, on whichever port
+ * Vite ended up on — so nobody has to find the URL in the log. Done here rather
+ * than with Vite's --open, which on Windows silently opened nothing when run
+ * from a double-clicked .bat.
+ */
+function windowsBrowser() {
+  const dirs = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA]
+  const exes = ['Google\\Chrome\\Application\\chrome.exe', 'Microsoft\\Edge\\Application\\msedge.exe']
+  for (const exe of exes) {
+    for (const dir of dirs) {
+      if (dir && existsSync(`${dir}\\${exe}`)) return `${dir}\\${exe}`
+    }
+  }
+  return null
+}
+
+let opened = false
+face.stdout.on('data', (d) => {
+  if (opened) return
+  // Vite colours its output, so strip the escapes before reading the URL.
+  const m = d.toString().replace(/\x1b\[[0-9;]*m/g, '').match(/Local:\s+(http:\/\/localhost:\d+)/)
+  if (!m) return
+  opened = true
+  // Chrome by name first: JARVIS is built for it, and handing the URL to the
+  // default handler was measured opening Edge as a background process with no
+  // window at all.
+  const browser = process.platform === 'win32' && windowsBrowser()
+  const [cmd, args] = browser
+    ? [browser, [m[1]]]
+    : process.platform === 'win32'
+      ? ['rundll32', ['url.dll,FileProtocolHandler', m[1]]]
+      : [process.platform === 'darwin' ? 'open' : 'xdg-open', [m[1]]]
+  spawn(cmd, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref()
+  console.log(`\n  Opened ${m[1]} in your browser.\n`)
+})
 
 console.log(
   '\nJARVIS opens in your browser when the dev server is ready (or open the URL\n' +
