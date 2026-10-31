@@ -111,6 +111,26 @@ if (port) {
   console.log(`  serving the face on port ${port}; the bridge will accept it.\n`)
 }
 
+/**
+ * A second copy cannot have the bridge's port, so its bridge dies at once and
+ * takes the face with it — a window that flashes an error and closes. Say so
+ * in words instead, since the usual cause is simply a JARVIS window still open.
+ */
+const bridgePort = process.env.JARVIS_BRIDGE_PORT || '8787'
+const alreadyRunning = await fetch(`http://localhost:${bridgePort}/health`, {
+  signal: AbortSignal.timeout(1500),
+})
+  .then((r) => r.ok)
+  .catch(() => false)
+if (alreadyRunning) {
+  console.log(
+    `\nJARVIS is already running (port ${bridgePort} is taken by another copy).\n` +
+      'Use the JARVIS tab already open in your browser, or close the other\n' +
+      'JARVIS window (or press Ctrl-C in it) and start this one again.\n',
+  )
+  process.exit(1)
+}
+
 vendorWasm()
 
 console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')

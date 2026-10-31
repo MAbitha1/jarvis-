@@ -4,6 +4,16 @@ rem time, then starts the brain and the face and opens JARVIS in your browser.
 title J.A.R.V.I.S.
 cd /d "%~dp0"
 
+if not exist "package.json" (
+  echo.
+  echo  This file was opened from inside the ZIP. Right-click the ZIP, choose
+  echo  "Extract All", open the extracted folder ^(it may hold another folder of
+  echo  the same name - open that too^) and double-click Start JARVIS.bat there.
+  echo.
+  pause
+  exit /b 1
+)
+
 where node >nul 2>nul
 if errorlevel 1 (
   echo.
